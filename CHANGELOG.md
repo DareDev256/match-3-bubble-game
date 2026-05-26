@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.17.2] — 2026-04-09
+
+### Fixed
+- **Score inflation from power-up creation** — `processMatches()` counted bubbles that became power-ups as "popped" (`totalPopped += group.length` ran before filtering), inflating `baseScore` and `sizeBonus` by 10–25+ points per power-up created. With streak/fever multipliers, the over-count cascaded into significantly inflated final scores. Fixed by moving the `totalPopped++` increment inside the pop branch so only actually-destroyed bubbles are counted
+- **Render loop running during pause** — `update()` continued rendering power-up overlays, fever meter, and hint glow every frame while paused, wasting GPU cycles behind the opaque pause overlay. Added `isPaused` early-return guard
+
+## [0.17.1] — 2026-04-08
+
+### Changed
+- **Storage key constants (`SK`)** — Extracted 30+ scattered `'whatspoppin_*'` magic strings into a centralized `SK` constant object with static keys and dynamic key generators (`SK.BEST_GRADE(mode)`, `SK.DAILY(dateKey)`, `SK.ACHIEVEMENT(id)`). Eliminates silent typo bugs and provides single-source-of-truth for all SafeStorage key names
+- **Unified swap-search (`_findValidSwap`)** — `findHintMove()` and `hasPossibleMoves()` contained near-identical 16-line grid traversals with try-swap-check-undo logic. Extracted the shared algorithm into `_findValidSwap()` — `findHintMove()` delegates directly, `hasPossibleMoves()` becomes a one-liner null check. Net ~15 lines removed
+- **Grid iteration utility (`forEachCell`)** — Extracted the repeated `for(r) for(c)` nested loop pattern (5 occurrences) into a `forEachCell(callback)` helper. Applied to `renderPowerUpOverlays()` and `reshuffleGrid()` (both collect + assign passes). Remaining grid loops retained where early-return semantics require `for` (swap search)
+
+## [0.17.0] — 2026-04-08
+
+### Added
+- **Daily Challenge mode** — A new game mode where every player gets the same deterministic grid each day, seeded from the UTC date via a mulberry32 PRNG. Timed at 90 seconds with 3 hint charges, like standard timed mode. Daily best score persists via SafeStorage with date-keyed entries (`whatspoppin_daily_YYYY-MM-DD`). Title screen shows a fire-icon Daily Challenge button with today's date and completion status (✓ + best score when completed). Game over screen displays daily-specific header ("DAILY COMPLETE"), date badge, and lifetime daily completion count. Share card includes the daily date for social comparison. Lifetime daily counter tracks total challenges completed. `VALID_MODES` allowlist updated to include `'daily'` — all security guards (sanitizeMode, scene data validation) accept the new mode
+
+## [0.16.1] — 2026-04-07
+
+### Security
+- **SafeStorage checksum bypass fix** — `get()` previously returned raw values when the `_c` checksum key was missing (`if (check && ...)` short-circuited to `false`). Attackers could modify any stored value and delete its companion checksum key to bypass integrity checks entirely. Fixed to `if (!check || check !== ...)` — missing checksums are now treated as tampered
+- **SafeStorage key validation** — Added `_validKey()` gate on both `get()` and `set()`. Enforces alphanumeric + underscore pattern with 64-char max. Prevents prototype pollution and storage key injection via crafted inputs
+- **SafeStorage value size cap** — `set()` now rejects values exceeding 1KB, preventing localStorage abuse via oversized writes
+- **RunHistory JSON hardening** — Added 4KB size cap on raw JSON string before `JSON.parse()` to prevent memory-bomb attacks. Tightened entry validation: enforces `typeof === 'object'` check, non-negative number ranges, grade allowlist (`/^[A-FS]{1,2}$/`), and mode allowlist (`timed`/`zen`) on every deserialized field
+
+## [0.16.0] — 2026-04-07
+
+### Added
+- **Run history sparkline** — New `src/history.js` module tracks the last 10 game results (score, grade, mode, streak) via SafeStorage with JSON tamper validation. Title screen renders an animated bar chart where each bar represents a game session, color-coded by grade tier (S=gold, A=green, B=blue, C=orange, D=red, F=grey). Bars animate in with staggered `Back.easeOut` timing. The latest bar pulses with a glow effect and shows the score label. A trend arrow (↑/↓/→) compares the most recent score to the rolling average. Replaces the plain high score text once 2+ games are recorded; falls back gracefully for new players
+
+## [0.15.0] — 2026-04-06
+
+### Added
+- **Colorblind mode** — Eye icon toggle on the title screen enables unique geometric symbols on each bubble color (diamond, cross, ring, triangle, square, 6-point star). Makes the game fully playable for the ~8% of men with color vision deficiency. Symbol textures are generated once at boot alongside the standard bubbles via `CB_SYMBOLS` drawers. All bubble texture references routed through `bubbleKey()` helper for seamless switching. Setting persists across sessions via SafeStorage (`whatspoppin_colorblind`)
+- **`Icons.a11y()`** — New eye icon drawn with Phaser Graphics arcs for the colorblind mode toggle
+
+## [0.14.1] — 2026-04-06
+
+### Security
+- **COOP/COEP headers** — Added `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` to SW security headers and HTML meta tag. Mitigates Spectre-class cross-origin window reference attacks and enables `crossOriginIsolated` mode
+- **Permissions-Policy in SW headers** — SW-served responses now carry `Permissions-Policy` header, reinforcing the HTML meta tag that browsers may not honor in all contexts
+- **Cache content-type validation** — SW now validates response `content-type` against a `SAFE_CACHE_TYPES` allowlist before caching. Prevents cache poisoning via unexpected MIME types
+- **Grid bounds validation** — `swapBubbles()` now validates all row/col coordinates against `GRID_ROWS`/`GRID_COLS` before array access, preventing OOB access from tampered Phaser data stores
+
+### Added
+- **16 security tests** — `safety.test.js` covers COOP/COEP headers, Permissions-Policy, cache content-type validation, SRI integrity, COOP meta tag, grid bounds guards, recursion cap, and VALID_MODES allowlist
+
 ## [0.14.0] — 2026-04-05
 
 ### Changed

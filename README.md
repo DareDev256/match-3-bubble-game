@@ -17,7 +17,10 @@ Bubble pop game with cultural sauce. Match bubbles, build streaks, unleash chara
 - **Score sharing** — Copy your score card to clipboard or share via Web Share API on mobile. Formatted for social posting
 - **Lifetime stats** — "Your Legacy" dashboard tracks all-time games played (per mode), total bubbles popped, cumulative score, best streak, and best grades. Animated count-up values and color-coded progress bars. All stats checksum-protected via SafeStorage
 - **Achievements** — 8 progression milestones (FIRST BLOOD, ON FIRE, DEMON TIME, TRANSCENDENT, BIG MONEY, UNTOUCHABLE, POP MACHINE, DEDICATED) that unlock during gameplay with animated toast notifications and a satisfying two-tone unlock sound. Achievement progress is displayed in the Your Legacy dashboard with color-coded unlock indicators. Persisted via SafeStorage
-- **Two modes** — Timed (90s) and Zen (no timer)
+- **Colorblind mode** — Toggle from the title screen to add unique geometric symbols (diamond, cross, ring, triangle, square, star) to each bubble color. Makes the game fully playable for players with color vision deficiency. Persists across sessions via SafeStorage
+- **Run history sparkline** — Title screen displays an animated bar chart of your last 10 game scores, color-coded by grade tier (S=gold, A=green, B=blue, C=orange, D=red). Latest bar pulses with a glow effect and shows the score. A trend arrow (↑/↓/→) compares your last game to the rolling average. Replaces the plain high score display once you have 2+ games. History persisted via SafeStorage with tamper validation
+- **Daily Challenge** — A new daily puzzle where every player gets the same deterministic grid, seeded from the UTC date via mulberry32 PRNG. Timed at 90s with 3 hints. Best score persists per day; title screen shows completion status and your daily best. Game over screen displays daily-specific branding with lifetime completion count. Share card includes the date for social comparison
+- **Three modes** — Timed (90s), Zen (no timer), and Daily Challenge (seeded daily grid)
 - **Tutorial** — Interactive walkthrough for new players
 - **PWA** — Installable, offline-capable, mobile-optimized
 
@@ -26,11 +29,13 @@ Bubble pop game with cultural sauce. Match bubbles, build streaks, unleash chara
 ```
 src/
   init.js        — SafeStorage (keyed checksums + per-install salt) + SW registration
-  game.js        — Grid engine, 7 Phaser scenes (incl. StatsScene), processMatches() pipeline (see below, depth-capped at 20), hint system, fever meter, TEXT_PRESETS + textStyle() typography system, achievement system (ACHIEVEMENTS + Achievements helper), VALID_MODES allowlist for scene data sanitization, per-frame render subsystems (renderPowerUpOverlays, renderFeverMeter, renderHintGlow), shared helpers (scanRuns, createButton, createToolbarBtn, createMuteToggle, safeDiv, safeScore, etc.)
+  history.js     — RunHistory persistence (last 10 games) + drawRunSparkline() animated bar chart renderer
+  game.js        — Grid engine, 7 Phaser scenes (incl. StatsScene), processMatches() pipeline (see below, depth-capped at 20), hint system, fever meter, colorblind mode (CB_SYMBOLS + bubbleKey()), TEXT_PRESETS + textStyle() typography system, achievement system (ACHIEVEMENTS + Achievements helper), DailyChallenge system (mulberry32 seeded PRNG + date-keyed persistence), VALID_MODES allowlist for scene data sanitization, SK storage key constants (centralized SafeStorage key registry), forEachCell() grid iteration utility, _findValidSwap() unified swap-search (shared by hints + possible-move checks), per-frame render subsystems (renderPowerUpOverlays, renderFeverMeter, renderHintGlow), shared helpers (scanRuns, createButton, createToolbarBtn, createMuteToggle, safeDiv, safeScore, etc.)
+  safety.test.js — Safety & security tests: COOP/COEP headers, cache content-type validation, SRI, grid bounds guards, recursion caps, object freeze verification, scoring integrity (totalPopped accuracy), pause-state render guard (23 tests)
   powerups.js    — PowerUpSystem (match analysis) + PowerUpRenderer (animated overlays)
   audio.js       — AudioEngine — fully synthesized sound via Web Audio API, _tone() helper, persistent mute toggle
   characters.js  — Procedurally drawn characters (Phaser Graphics API) + shared drawEye()/drawShadow() helpers
-  icons.js       — Icons class — SVG-style icon system (sound, soundOff, share, hint, trophy, etc.)
+  icons.js       — Icons class — SVG-style icon system (sound, soundOff, share, hint, trophy, a11y, etc.)
   render.test.js — 34 Vitest unit tests (Achievements persistence/unlock/check, VALID_MODES security allowlist, getAdlibTier tier resolution, getGrade boundary edge cases)
   game.test.js   — 131 Vitest unit tests (power-ups, scoring, chain bonus, matching, gravity, milestones, badges, safeDiv/safeScore, swap-reversal invariant, hint render safety)
   core.test.js   — 32 Vitest unit tests (scanRuns, textStyle/TEXT_PRESETS, SafeStorage tamper detection)
@@ -38,18 +43,18 @@ sw.js            — Service worker with CSP header injection + offline fallback
 index.html       — Entry point with CSP meta tag + SRI-verified CDN script
 ```
 
-All source files attach their exports to `window` — no bundler, no module system. Load order matters: `init.js` → `icons.js` → `powerups.js` → `characters.js` → `audio.js` → `game.js`.
+All source files attach their exports to `window` — no bundler, no module system. Load order matters: `init.js` → `history.js` → `icons.js` → `powerups.js` → `characters.js` → `audio.js` → `game.js`.
 
 ## Security
 
 - **SRI** — CDN scripts verified with SHA-384 subresource integrity hashes
 - **CSP** — Content-Security-Policy with no `unsafe-inline` on scripts, `object-src 'none'`, `upgrade-insecure-requests`, `base-uri`/`form-action`/`frame-ancestors` lockdown
 - **X-Frame-Options** — `DENY` header on both the HTML meta tag and all SW-served responses for legacy browser clickjacking protection
-- **SW header hardening** — Every response served through the SW (cached, network, and offline fallback) gets 8 security headers injected: `CSP`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Strict-Transport-Security`, `Cross-Origin-Opener-Policy`, `X-DNS-Prefetch-Control`, `Permissions-Policy`. Cross-origin (opaque) CDN responses are exempt to preserve SRI integrity. `clients.claim()` on activate ensures immediate coverage on all open tabs
-- **Cache poisoning guard** — SW only caches responses with safe MIME types (HTML, CSS, JS, JSON, images). Unexpected content-types are served but never persisted
-- **HSTS** — `Strict-Transport-Security` with 2-year max-age, includeSubDomains, and preload directive
-- **COOP** — `Cross-Origin-Opener-Policy: same-origin` mitigates Spectre-class cross-origin attacks
-- **Permissions-Policy** — Disables camera, microphone, geolocation, payment, USB, sensors
+- **SW header hardening** — Every response served through the SW (cached, network, and offline fallback) gets security headers injected: `CSP`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`, `Permissions-Policy`. Cross-origin (opaque) CDN responses are exempt to preserve SRI integrity
+- **Cache poisoning guard** — SW only caches responses with safe MIME types via `SAFE_CACHE_TYPES` allowlist (HTML, CSS, JS, JSON, images, fonts, WASM). Responses with missing or unexpected content-types are served but never persisted, preventing cache poisoning attacks
+- **COOP/COEP** — `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp` mitigate Spectre-class cross-origin attacks and enable `crossOriginIsolated` mode. Set in both SW headers and HTML meta tag
+- **Permissions-Policy** — Disables camera, microphone, geolocation, payment, USB via both HTML meta tag and SW response headers
+- **Grid bounds validation** — `swapBubbles()` validates all row/col coordinates against grid dimensions before array access, preventing OOB access from tampered Phaser data stores
 - **Referrer-Policy** — `no-referrer` prevents information leakage to CDN/third parties
 - **SafeStorage** — Try-catch wrappers and FNV-1a keyed checksums with per-install salt. Key validation enforces alphanumeric+underscore pattern and 64-char max on all `get()`/`set()` calls. Value writes capped at 1KB to prevent storage abuse. Missing checksums are treated as tampered (no deletion bypass). All numeric reads via `getInt()` reject scientific notation/hex/floats — only plain decimal digits accepted. Salt integrity is self-guarded — tampering invalidates all stored data
 - **Input sanitization layer** — Dedicated `sanitizeMode()`, `sanitizeGrade()`, and `sanitizeStorageKey()` functions validate all user-influenced data at trust boundaries. `sanitizeMode()` whitelists `timed`/`zen` with case-insensitive matching; `sanitizeGrade()` whitelists `S`–`F`; `sanitizeStorageKey()` enforces alphanumeric+underscore with 64-char max. Applied at every scene transition and storage read/display point
@@ -59,6 +64,8 @@ All source files attach their exports to `window` — no bundler, no module syst
 - **DNS prefetch control** — Disabled to prevent DNS info leakage to third parties
 - **PWA scope restriction** — Manifest `scope` locks installed PWA to `/`, preventing navigation outside the app boundary
 - **Race condition guards** — `gameOverRef` prevents input after time-up; `transitioningRef` prevents double-fire on simultaneous timer/completion events
+- **RunHistory hardening** — JSON string size capped at 4KB before `JSON.parse()` to prevent memory-bomb attacks. Entry validation enforces type checks, non-negative ranges, grade allowlist (`/^[A-FS]{1,2}$/`), and mode allowlist (`timed`/`zen`/`daily`) on every field
+- **Object immutability** — Critical security objects (`SafeStorage`, `RunHistory`, `SK`) are frozen via `Object.freeze()` before exposure on `window`, preventing runtime monkey-patching by injected scripts or browser extensions
 
 ## Hint & Auto-Select System
 

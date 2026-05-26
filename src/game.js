@@ -25,6 +25,55 @@ const COLORS = [
 
 const COLOR_NAMES = ['purple', 'red', 'green', 'gold', 'blue', 'orange'];
 
+/**
+ * Colorblind symbol drawers — each renders a unique geometric shape
+ * on top of the bubble to distinguish colors without relying on hue.
+ * Shapes: diamond, cross, ring, triangle, square, star.
+ * @type {Array<(g: Phaser.GameObjects.Graphics, cx: number, cy: number, s: number) => void>}
+ */
+const CB_SYMBOLS = [
+  (g, cx, cy, s) => { // purple — diamond
+    g.fillStyle(0xffffff, 0.9);
+    g.beginPath(); g.moveTo(cx, cy - s); g.lineTo(cx + s * 0.7, cy);
+    g.lineTo(cx, cy + s); g.lineTo(cx - s * 0.7, cy); g.closePath(); g.fillPath();
+  },
+  (g, cx, cy, s) => { // red — cross
+    g.lineStyle(3.5, 0xffffff, 0.9);
+    g.lineBetween(cx - s, cy - s, cx + s, cy + s);
+    g.lineBetween(cx + s, cy - s, cx - s, cy + s);
+  },
+  (g, cx, cy, s) => { // green — ring
+    g.lineStyle(3, 0xffffff, 0.9);
+    g.strokeCircle(cx, cy, s * 0.85);
+  },
+  (g, cx, cy, s) => { // gold — triangle
+    g.fillStyle(0xffffff, 0.9);
+    g.beginPath(); g.moveTo(cx, cy - s);
+    g.lineTo(cx + s, cy + s * 0.7); g.lineTo(cx - s, cy + s * 0.7);
+    g.closePath(); g.fillPath();
+  },
+  (g, cx, cy, s) => { // blue — square
+    g.fillStyle(0xffffff, 0.9);
+    g.fillRect(cx - s * 0.7, cy - s * 0.7, s * 1.4, s * 1.4);
+  },
+  (g, cx, cy, s) => { // orange — 6-point star
+    g.fillStyle(0xffffff, 0.9);
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 3;
+      const r = i % 2 === 0 ? s : s * 0.45;
+      g[i === 0 ? 'moveTo' : 'lineTo'](cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+    g.closePath(); g.fillPath();
+  },
+];
+
+/** Return the correct bubble texture key based on colorblind mode setting. */
+function bubbleKey(colorIdx) {
+  return SafeStorage.get(SK.COLORBLIND, '0') === '1'
+    ? `bubble_cb_${colorIdx}` : `bubble_${colorIdx}`;
+}
+
 const STREAK_LEVELS = [
   { min: 3,  label: 'NICE',         color: '#2ecc71', size: 28, char: 'kira' },
   { min: 5,  label: 'FIRE',          color: '#f1c40f', size: 34, char: 'blaze' },
@@ -40,6 +89,41 @@ const ADLIBS = {
 };
 
 const UI_FONT = '"Segoe UI", system-ui, sans-serif';
+
+// =============================================================
+// STORAGE KEYS — single source of truth for all SafeStorage keys
+// =============================================================
+const SK = {
+  HIGH_SCORE:    'whatspoppin_highscore',
+  BEST_STREAK:   'whatspoppin_best_streak',
+  COLORBLIND:    'whatspoppin_colorblind',
+  PLAYED:        'whatspoppin_played',
+  TOTAL_POPS:    'whatspoppin_total_pops',
+  TOTAL_SCORE:   'whatspoppin_total_score',
+  GAMES_TIMED:   'whatspoppin_games_timed',
+  GAMES_ZEN:     'whatspoppin_games_zen',
+  DAILY_TOTAL:   'whatspoppin_daily_total',
+  BEST_GRADE:    (mode) => `whatspoppin_bestgrade_${mode}`,
+  GAMES:         (mode) => `whatspoppin_games_${mode}`,
+  DAILY:         (dateKey) => `whatspoppin_daily_${dateKey}`,
+  ACHIEVEMENT:   (id) => `whatspoppin_ach_${id}`,
+};
+
+// =============================================================
+// GRID HELPERS — eliminate repeated nested loop boilerplate
+// =============================================================
+
+/**
+ * Iterate every cell in the grid, invoking callback(r, c) for each.
+ * Replaces the 5+ copies of `for(r) for(c)` scattered across GameScene.
+ */
+function forEachCell(callback) {
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      callback(r, c);
+    }
+  }
+}
 
 const GRADES = [
   { grade: 'S', minScore: 5000, minStreak: 8, color: '#ffd700', label: 'SUPREME' },
@@ -68,7 +152,7 @@ const ACHIEVEMENTS = [
  * Stores each unlock as `whatspoppin_ach_<id>` = '1' via SafeStorage.
  */
 const Achievements = {
-  _key(id) { return `whatspoppin_ach_${id}`; },
+  _key(id) { return SK.ACHIEVEMENT(id); },
   isUnlocked(id) { return SafeStorage.get(this._key(id), '0') === '1'; },
   unlock(id) {
     if (this.isUnlocked(id)) return false;
@@ -86,6 +170,91 @@ const Achievements = {
     return fresh;
   },
   countUnlocked() { return ACHIEVEMENTS.filter(a => this.isUnlocked(a.id)).length; },
+};
+
+// =============================================================
+// DAILY CHALLENGE — Seeded puzzle, same board for everyone each day
+// =============================================================
+
+/**
+ * Mulberry32 seeded PRNG — deterministic 32-bit pseudo-random.
+ * Given the same seed, produces the same sequence every time.
+ * @param {number} seed — 32-bit integer seed
+ * @returns {() => number} function returning [0, 1) floats
+ */
+function mulberry32(seed) {
+  return () => {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Daily Challenge persistence + seeding layer.
+ * Uses the current UTC date as a seed so every player gets the same grid.
+ * Tracks today's best score and completion state via SafeStorage.
+ */
+const DailyChallenge = {
+  /** @returns {string} UTC date key, e.g. '2026-04-08' */
+  todayKey() {
+    return new Date().toISOString().slice(0, 10);
+  },
+
+  /** @returns {number} deterministic seed from today's date */
+  todaySeed() {
+    const key = this.todayKey();
+    let h = 0;
+    for (let i = 0; i < key.length; i++) {
+      h = Math.imul(31, h) + key.charCodeAt(i) | 0;
+    }
+    return h;
+  },
+
+  /** @returns {() => number} seeded PRNG for today's grid */
+  createRng() {
+    return mulberry32(this.todaySeed());
+  },
+
+  /** @returns {number} today's best score (0 if unplayed) */
+  bestScore() {
+    return SafeStorage.getInt(SK.DAILY(this.todayKey()), 0);
+  },
+
+  /** Save score if it beats today's record. @returns {boolean} true if new daily best */
+  saveScore(score) {
+    const key = SK.DAILY(this.todayKey());
+    const prev = SafeStorage.getInt(key, 0);
+    if (score > prev) {
+      SafeStorage.set(key, score.toString());
+      return true;
+    }
+    return false;
+  },
+
+  /** @returns {boolean} true if player has completed today's challenge */
+  isCompleted() {
+    return this.bestScore() > 0;
+  },
+
+  /** @returns {number} total daily challenges completed (lifetime) */
+  totalCompleted() {
+    return SafeStorage.getInt(SK.DAILY_TOTAL, 0);
+  },
+
+  /** Increment the lifetime daily challenge counter. */
+  incrementTotal() {
+    const prev = SafeStorage.getInt(SK.DAILY_TOTAL, 0);
+    SafeStorage.set(SK.DAILY_TOTAL, (prev + 1).toString());
+  },
+
+  /** @returns {string} formatted display date, e.g. 'APR 8' */
+  displayDate() {
+    const d = new Date();
+    const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    return `${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  },
 };
 
 /** Calculate performance grade from score and best streak. */
@@ -389,6 +558,21 @@ class BootScene extends Phaser.Scene {
       gfx.destroy();
     });
 
+    // Colorblind bubble textures — same base bubble + unique geometric symbol
+    const half = BUBBLE_SIZE / 2;
+    COLORS.forEach((color, i) => {
+      const g = this.add.graphics();
+      g.fillStyle(color, 0.3);
+      g.fillCircle(half, half, half);
+      g.fillStyle(color, 1);
+      g.fillCircle(half, half, half - 3);
+      CB_SYMBOLS[i](g, half, half, 7);
+      g.fillStyle(0xffffff, 0.2);
+      g.fillCircle(half - 6, half - 6, 6);
+      g.generateTexture(`bubble_cb_${i}`, BUBBLE_SIZE, BUBBLE_SIZE);
+      g.destroy();
+    });
+
     const pGfx = this.add.graphics();
     pGfx.fillStyle(0xffffff, 1);
     pGfx.fillCircle(4, 4, 4);
@@ -424,7 +608,7 @@ class TitleScene extends Phaser.Scene {
       const bx = Phaser.Math.Between(20, width - 20);
       const by = Phaser.Math.Between(50, height - 50);
       const colorIdx = Phaser.Math.Between(0, COLORS.length - 1);
-      const bubble = this.add.image(bx, by, `bubble_${colorIdx}`);
+      const bubble = this.add.image(bx, by, bubbleKey(colorIdx));
       bubble.setAlpha(0.15);
       bubble.setScale(Phaser.Math.FloatBetween(0.5, 1.2));
       this.tweens.add({
@@ -491,39 +675,56 @@ class TitleScene extends Phaser.Scene {
       callback: () => this.scene.start('GameScene', { mode: 'zen' }),
     });
 
-    // How to Play button
+    // Daily Challenge button — pulsing accent, shows today's date + completion
+    const dailyDone = DailyChallenge.isCompleted();
+    const dailyBest = DailyChallenge.bestScore();
+    const dailySub = dailyDone
+      ? `✓ Best: ${dailyBest.toLocaleString()} — tap to beat it`
+      : `${DailyChallenge.displayDate()} — same board for everyone`;
     createButton(this, { x: width / 2, y: btnY + 160, width: btnWidth, height: btnHeight, radius: 12,
+      text: 'DAILY CHALLENGE', subtext: dailySub,
+      iconFn: (s, bx, by) => Icons.fire(s, bx, by, 18, 0xff6b35),
+      callback: () => this.scene.start('GameScene', { mode: 'daily' }),
+    });
+
+    // How to Play button
+    createButton(this, { x: width / 2, y: btnY + 240, width: btnWidth, height: btnHeight, radius: 12,
       text: 'HOW TO PLAY', subtext: 'Tips, controls, power-ups',
       iconFn: (s, bx, by) => Icons.help(s, bx, by, 18, 0xffffff),
       callback: () => this.scene.start('TipsScene'),
     });
 
     // Stats button
-    createButton(this, { x: width / 2, y: btnY + 240, width: btnWidth, height: btnHeight, radius: 12,
+    createButton(this, { x: width / 2, y: btnY + 320, width: btnWidth, height: btnHeight, radius: 12,
       text: 'YOUR LEGACY', subtext: 'Lifetime stats & records',
       iconFn: (s, bx, by) => Icons.trophy(s, bx, by, 18, 0xf1c40f),
       callback: () => this.scene.start('StatsScene'),
     });
 
     // First-time tutorial check
-    if (!SafeStorage.get('whatspoppin_played', null)) {
-      createButton(this, { x: width / 2, y: btnY + 320, width: btnWidth, height: btnHeight, radius: 12,
+    if (!SafeStorage.get(SK.PLAYED, null)) {
+      createButton(this, { x: width / 2, y: btnY + 400, width: btnWidth, height: btnHeight, radius: 12,
         text: 'TUTORIAL', subtext: 'Learn the basics step by step',
         callback: () => this.scene.start('TutorialScene'),
       });
     }
 
-    // High score display
-    const highScore = SafeStorage.getInt('whatspoppin_highscore', 0);
-    if (highScore > 0) {
+    // High score display + run history sparkline
+    const highScore = SafeStorage.getInt(SK.HIGH_SCORE, 0);
+    const hasHistory = typeof drawRunSparkline === 'function' && RunHistory.load().length >= 2;
+    if (hasHistory) {
+      // Sparkline replaces plain high score with richer visualization
+      drawRunSparkline(this, width / 2, height * 0.82, width - 80, 50);
+    } else if (highScore > 0) {
+      // Fallback: plain high score when not enough history
       Icons.star(this, width / 2 - 100, height * 0.85, 14, 0xf1c40f);
       this.add.text(width / 2, height * 0.85, `HIGH SCORE: ${highScore.toLocaleString()}`,
         textStyle('accent', { fontSize: '18px' })).setOrigin(0.5);
     }
 
     // Best grade badges (per mode)
-    const bestGradeTimed = SafeStorage.get('whatspoppin_bestgrade_timed', null);
-    const bestGradeZen = SafeStorage.get('whatspoppin_bestgrade_zen', null);
+    const bestGradeTimed = SafeStorage.get(SK.BEST_GRADE('timed'), null);
+    const bestGradeZen = SafeStorage.get(SK.BEST_GRADE('zen'), null);
     if (bestGradeTimed || bestGradeZen) {
       let badgeX = width / 2 - 60;
       const badgeY = height * 0.89;
@@ -547,6 +748,19 @@ class TitleScene extends Phaser.Scene {
       window.audioEngine.init();
       window.audioEngine.resume();
       mute.update(window.audioEngine.toggleMute());
+    });
+
+    // ---- COLORBLIND TOGGLE (bottom-left) ----
+    const cbOn = SafeStorage.get(SK.COLORBLIND, '0') === '1';
+    const cbColor = cbOn ? 0x2ecc71 : 0x555555;
+    let cbIcon = Icons.a11y(this, 30, height * 0.93, 18, cbColor);
+    const cbLabel = this.add.text(30, height * 0.93 + 14, cbOn ? 'ON' : 'OFF',
+      textStyle('label', { fontSize: '8px', color: cbOn ? '#2ecc71' : '#555555' })).setOrigin(0.5);
+    const cbHit = this.add.rectangle(30, height * 0.93, 36, 36).setInteractive().setAlpha(0.001);
+    cbHit.on('pointerdown', () => {
+      const next = SafeStorage.get(SK.COLORBLIND, '0') === '1' ? '0' : '1';
+      SafeStorage.set(SK.COLORBLIND, next);
+      this.scene.restart(); // rebuild with new textures
     });
 
     // Credits
@@ -586,8 +800,10 @@ class GameOverScene extends Phaser.Scene {
     bg.fillRect(0, 0, width, height);
 
     // Game Over text
-    const goText = this.add.text(width / 2, height * 0.12, 'TIME\'S UP',
-      textStyle('heading', { fontSize: '42px', color: '#e74c3c', strokeThickness: 5 }),
+    const goLabel = mode === 'daily' ? 'DAILY COMPLETE' : 'TIME\'S UP';
+    const goColor = mode === 'daily' ? '#ff6b35' : '#e74c3c';
+    const goText = this.add.text(width / 2, height * 0.12, goLabel,
+      textStyle('heading', { fontSize: '42px', color: goColor, strokeThickness: 5 }),
     ).setOrigin(0.5).setScale(0);
 
     this.tweens.add({
@@ -698,11 +914,24 @@ class GameOverScene extends Phaser.Scene {
     }
 
     // Persist best grade per mode
-    const gradeKey = `whatspoppin_bestgrade_${mode}`;
+    const gradeKey = SK.BEST_GRADE(mode);
     const prevBest = SafeStorage.get(gradeKey, 'F');
     const gradeRank = 'SABCDF';
     if (gradeRank.indexOf(gradeInfo.grade) < gradeRank.indexOf(prevBest)) {
       SafeStorage.set(gradeKey, gradeInfo.grade);
+    }
+
+    // Daily Challenge badge — show daily-specific info
+    if (mode === 'daily') {
+      const dailyBest = DailyChallenge.bestScore();
+      const dailyTotal = DailyChallenge.totalCompleted();
+      const dailyY = gradeY + 56;
+      this.add.text(width / 2, dailyY, `DAILY — ${DailyChallenge.displayDate()}`,
+        textStyle('badge', { fontSize: '14px', color: '#ff6b35', stroke: '', strokeThickness: 0 })).setOrigin(0.5);
+      if (dailyTotal > 1) {
+        this.add.text(width / 2, dailyY + 18, `${dailyTotal} dailies completed`,
+          textStyle('label', { color: '#555555' })).setOrigin(0.5);
+      }
     }
 
     // Streak tier character (compact, beside grade)
@@ -770,7 +999,7 @@ class GameOverScene extends Phaser.Scene {
     const cleanChain = Number.isFinite(bestChain) ? bestChain : 0;
     const tierLevel = getStreakLevel(cleanStreak);
     const tierLabel = tierLevel ? ` — ${tierLevel.label}` : '';
-    const modeLabel = mode === 'zen' ? 'Zen' : 'Timed';
+    const modeLabel = mode === 'daily' ? `Daily (${DailyChallenge.displayDate()})` : mode === 'zen' ? 'Zen' : 'Timed';
     const avgPerMove = Math.round(safeDiv(cleanScore, cleanMoves));
 
     const gradeInfo = getGrade(cleanScore, cleanStreak);
@@ -999,7 +1228,7 @@ class TutorialScene extends Phaser.Scene {
     nextHit.on('pointerdown', () => {
       this.stepIndex++;
       if (this.stepIndex >= steps.length) {
-        SafeStorage.set('whatspoppin_played', '1');
+        SafeStorage.set(SK.PLAYED, '1');
         this.scene.start('TitleScene');
         return;
       }
@@ -1011,7 +1240,7 @@ class TutorialScene extends Phaser.Scene {
     const skip = this.add.text(width - 20, 25, 'SKIP',
       textStyle('muted', { fontSize: '13px', color: '#555555' })).setOrigin(1, 0).setInteractive();
     skip.on('pointerdown', () => {
-      SafeStorage.set('whatspoppin_played', '1');
+      SafeStorage.set(SK.PLAYED, '1');
       this.scene.start('TitleScene');
     });
   }
@@ -1131,14 +1360,14 @@ class StatsScene extends Phaser.Scene {
 
     // Load all stats from SafeStorage
     const stats = {
-      gamesTimed: SafeStorage.getInt('whatspoppin_games_timed', 0),
-      gamesZen: SafeStorage.getInt('whatspoppin_games_zen', 0),
-      highScore: SafeStorage.getInt('whatspoppin_highscore', 0),
-      bestStreak: SafeStorage.getInt('whatspoppin_best_streak', 0),
-      totalPops: SafeStorage.getInt('whatspoppin_total_pops', 0),
-      totalScore: SafeStorage.getInt('whatspoppin_total_score', 0),
-      gradeTimed: SafeStorage.get('whatspoppin_bestgrade_timed', '—'),
-      gradeZen: SafeStorage.get('whatspoppin_bestgrade_zen', '—'),
+      gamesTimed: SafeStorage.getInt(SK.GAMES_TIMED, 0),
+      gamesZen: SafeStorage.getInt(SK.GAMES_ZEN, 0),
+      highScore: SafeStorage.getInt(SK.HIGH_SCORE, 0),
+      bestStreak: SafeStorage.getInt(SK.BEST_STREAK, 0),
+      totalPops: SafeStorage.getInt(SK.TOTAL_POPS, 0),
+      totalScore: SafeStorage.getInt(SK.TOTAL_SCORE, 0),
+      gradeTimed: SafeStorage.get(SK.BEST_GRADE('timed'), '—'),
+      gradeZen: SafeStorage.get(SK.BEST_GRADE('zen'), '—'),
     };
     stats.totalGames = stats.gamesTimed + stats.gamesZen;
 
@@ -1295,7 +1524,7 @@ class GameScene extends Phaser.Scene {
   }
 
   /** @type {ReadonlySet<string>} Allowed game mode values — rejects tampered scene data. */
-  static VALID_MODES = Object.freeze(new Set(['timed', 'zen']));
+  static VALID_MODES = Object.freeze(new Set(['timed', 'zen', 'daily']));
 
   init(data) {
     const rawMode = data?.mode || 'timed';
@@ -1330,8 +1559,8 @@ class GameScene extends Phaser.Scene {
     this.feverCount = 0;         // times fever activated this game
 
     // Live milestone tracking — loaded records from SafeStorage
-    this.prevHighScore = SafeStorage.getInt('whatspoppin_highscore', 0);
-    this.prevBestStreak = SafeStorage.getInt('whatspoppin_best_streak', 0);
+    this.prevHighScore = SafeStorage.getInt(SK.HIGH_SCORE, 0);
+    this.prevBestStreak = SafeStorage.getInt(SK.BEST_STREAK, 0);
     this.highScoreNotified = false;   // fire once per game
     this.bestStreakNotified = false;
     this._multGlowTween = null;      // multiplier badge pulsing tween ref
@@ -1339,6 +1568,9 @@ class GameScene extends Phaser.Scene {
     // Cascade chain tracking — counts gravity-induced chain reactions per move
     this.chainDepth = 0;       // current cascade depth (1 = initial match, 2+ = chain)
     this.bestChain = 0;        // best chain this game (for stats)
+
+    // Daily Challenge — seeded PRNG for deterministic grid
+    this.dailyRng = this.gameMode === 'daily' ? DailyChallenge.createRng() : null;
   }
 
   create() {
@@ -1385,8 +1617,8 @@ class GameScene extends Phaser.Scene {
     this.characterGfx.setAlpha(0);
     this.hypeBar.add(this.characterGfx);
 
-    // ---- TIMER (timed mode) ----
-    if (this.gameMode === 'timed') {
+    // ---- TIMER (timed + daily modes) ----
+    if (this.gameMode === 'timed' || this.gameMode === 'daily') {
       this.timerBg = this.add.graphics();
       this.timerBg.fillStyle(0x2ecc71, 1);
       this.timerBg.fillRect(0, HYPE_BAR_HEIGHT, width, 4);
@@ -1425,6 +1657,11 @@ class GameScene extends Phaser.Scene {
     if (this.gameMode === 'zen') {
       this.add.text(width / 2, HYPE_BAR_HEIGHT + 12, 'ZEN MODE',
         textStyle('muted', { color: '#3498db' })).setOrigin(0.5, 0);
+    } else if (this.gameMode === 'daily') {
+      const dailyLabel = this.add.text(width / 2, HYPE_BAR_HEIGHT + 12,
+        `DAILY — ${DailyChallenge.displayDate()}`,
+        textStyle('badge', { fontSize: '12px', color: '#ff6b35' })).setOrigin(0.5, 0);
+      this.tweens.add({ targets: dailyLabel, alpha: 0.5, duration: 1200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     }
 
     // ---- POWER-UP OVERLAY (drawn each frame for pulsing effects) ----
@@ -1681,6 +1918,9 @@ class GameScene extends Phaser.Scene {
   }
 
   update(time) {
+    // Skip per-frame rendering while paused — avoids GPU work behind the
+    // pause overlay and prevents visual flicker from animated effects.
+    if (this.isPaused) return;
     this.renderPowerUpOverlays(time);
     this.renderFeverMeter(time);
     this.renderHintGlow(time);
@@ -1701,19 +1941,17 @@ class GameScene extends Phaser.Scene {
   renderPowerUpOverlays(time) {
     if (!this.powerUpOverlay) return;
     this.powerUpOverlay.clear();
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        const bubble = this.grid[r]?.[c];
-        if (!bubble) continue;
-        const pType = bubble.getData('powerUp');
-        if (pType && pType !== POWERUP_TYPES.NONE) {
-          PowerUpRenderer.draw(
-            this.powerUpOverlay, pType,
-            bubble.x, bubble.y, BUBBLE_SIZE, time
-          );
-        }
+    forEachCell((r, c) => {
+      const bubble = this.grid[r]?.[c];
+      if (!bubble) return;
+      const pType = bubble.getData('powerUp');
+      if (pType && pType !== POWERUP_TYPES.NONE) {
+        PowerUpRenderer.draw(
+          this.powerUpOverlay, pType,
+          bubble.x, bubble.y, BUBBLE_SIZE, time
+        );
       }
-    }
+    });
   }
 
   /**
@@ -1988,32 +2226,47 @@ class GameScene extends Phaser.Scene {
     // Play final sound
     window.audioEngine.playStreakHit(12);
 
-    const highScore = SafeStorage.getInt('whatspoppin_highscore', 0);
+    const highScore = SafeStorage.getInt(SK.HIGH_SCORE, 0);
     const finalScore = Number.isFinite(this.score) ? this.score : 0;
     const isNewHigh = finalScore > highScore;
     if (isNewHigh) {
-      SafeStorage.set('whatspoppin_highscore', Math.max(0, Math.floor(finalScore)).toString());
+      SafeStorage.set(SK.HIGH_SCORE, Math.max(0, Math.floor(finalScore)).toString());
     }
 
     // Persist lifetime stats
-    const gamesKey = `whatspoppin_games_${this.gameMode}`;
+    const gamesKey = SK.GAMES(this.gameMode);
     SafeStorage.set(gamesKey, (SafeStorage.getInt(gamesKey, 0) + 1).toString());
-    const lifetimePops = SafeStorage.getInt('whatspoppin_total_pops', 0) + (this.totalPopped || 0);
-    SafeStorage.set('whatspoppin_total_pops', lifetimePops.toString());
-    const lifetimeScore = SafeStorage.getInt('whatspoppin_total_score', 0) + finalScore;
-    SafeStorage.set('whatspoppin_total_score', Math.max(0, Math.floor(lifetimeScore)).toString());
-    const allTimeBest = SafeStorage.getInt('whatspoppin_best_streak', 0);
+    const lifetimePops = SafeStorage.getInt(SK.TOTAL_POPS, 0) + (this.totalPopped || 0);
+    SafeStorage.set(SK.TOTAL_POPS, lifetimePops.toString());
+    const lifetimeScore = SafeStorage.getInt(SK.TOTAL_SCORE, 0) + finalScore;
+    SafeStorage.set(SK.TOTAL_SCORE, Math.max(0, Math.floor(lifetimeScore)).toString());
+    const allTimeBest = SafeStorage.getInt(SK.BEST_STREAK, 0);
     if ((this.bestStreak || 0) > allTimeBest) {
-      SafeStorage.set('whatspoppin_best_streak', this.bestStreak.toString());
+      SafeStorage.set(SK.BEST_STREAK, this.bestStreak.toString());
+    }
+
+    // Daily Challenge — save daily best and track completion
+    if (this.gameMode === 'daily') {
+      const isNewDaily = DailyChallenge.saveScore(finalScore);
+      if (isNewDaily && finalScore > 0) DailyChallenge.incrementTotal();
     }
 
     // End-of-game achievement check (lifetime stats like games_10, pops_500)
     const endSession = { score: finalScore, bestStreak: this.bestStreak || 0 };
     const endLifetime = {
       totalPops: lifetimePops,
-      totalGames: SafeStorage.getInt('whatspoppin_games_timed', 0) + SafeStorage.getInt('whatspoppin_games_zen', 0),
+      totalGames: SafeStorage.getInt(SK.GAMES_TIMED, 0) + SafeStorage.getInt(SK.GAMES_ZEN, 0),
     };
     Achievements.check(endSession, endLifetime);
+
+    // Record run for sparkline history
+    const gradeInfo = getGrade(finalScore, this.bestStreak || 0);
+    RunHistory.record({
+      score: finalScore,
+      grade: gradeInfo.grade,
+      mode: this.gameMode,
+      streak: this.bestStreak || 0,
+    });
 
     // Transition — safeScore() catches NaN/Infinity that || 0 would miss
     this.time.delayedCall(1000, () => {
@@ -2044,10 +2297,12 @@ class GameScene extends Phaser.Scene {
   }
 
   spawnBubble(row, col, animate = false) {
-    const colorIdx = Phaser.Math.Between(0, COLORS.length - 1);
+    const colorIdx = this.dailyRng
+      ? Math.floor(this.dailyRng() * COLORS.length)
+      : Phaser.Math.Between(0, COLORS.length - 1);
     const pos = this.gridToWorld(row, col);
 
-    const bubble = this.add.image(pos.x, animate ? -50 : pos.y, `bubble_${colorIdx}`);
+    const bubble = this.add.image(pos.x, animate ? -50 : pos.y, bubbleKey(colorIdx));
     bubble.setInteractive();
     bubble.setData('row', row);
     bubble.setData('col', col);
@@ -2085,7 +2340,7 @@ class GameScene extends Phaser.Scene {
         const b = group[group.length - 1];
         const newColor = this.getColorWithoutMatch(b.getData('row'), b.getData('col'));
         b.setData('colorIdx', newColor);
-        b.setTexture(`bubble_${newColor}`);
+        b.setTexture(bubbleKey(newColor));
       });
       safety++;
     }
@@ -2203,6 +2458,16 @@ class GameScene extends Phaser.Scene {
     this.idleTime = 0;
     const r1 = a.getData('row'), c1 = a.getData('col');
     const r2 = b.getData('row'), c2 = b.getData('col');
+
+    // Bounds guard — reject tampered row/col data to prevent OOB grid access
+    if (
+      r1 < 0 || r1 >= GRID_ROWS || c1 < 0 || c1 >= GRID_COLS ||
+      r2 < 0 || r2 >= GRID_ROWS || c2 < 0 || c2 >= GRID_COLS
+    ) {
+      this.isProcessing = false;
+      return;
+    }
+
     const pos1 = this.gridToWorld(r1, c1);
     const pos2 = this.gridToWorld(r2, c2);
 
@@ -2251,7 +2516,7 @@ class GameScene extends Phaser.Scene {
   }
 
   spawnSwapTrail(bubble, from, to) {
-    const trail = this.add.image(from.x, from.y, `bubble_${bubble.getData('colorIdx')}`);
+    const trail = this.add.image(from.x, from.y, bubbleKey(bubble.getData('colorIdx')));
     trail.setAlpha(0.4);
     trail.setScale(0.6);
     trail.setDepth(1);
@@ -2429,9 +2694,8 @@ class GameScene extends Phaser.Scene {
         });
       }
 
-      totalPopped += group.length;
       group.forEach(bubble => {
-        // Skip if this bubble will become a power-up
+        // Skip if this bubble will become a power-up — it stays alive on the grid
         const isNewPowerUp = powerUpsToCreate.find(
           p => p.row === bubble.getData('row') && p.col === bubble.getData('col')
         );
@@ -2439,6 +2703,7 @@ class GameScene extends Phaser.Scene {
           window.audioEngine.playPop(this.streak, popIdx);
           this.popBubble(bubble);
           popIdx++;
+          totalPopped++;
         }
       });
     });
@@ -2522,8 +2787,8 @@ class GameScene extends Phaser.Scene {
     // ---- ACHIEVEMENT CHECKS (streak + first pop) ----
     const sessionSnap = { score: this.score, bestStreak: this.bestStreak };
     const ltSnap = {
-      totalPops: SafeStorage.getInt('whatspoppin_total_pops', 0) + this.totalPopped,
-      totalGames: SafeStorage.getInt('whatspoppin_games_timed', 0) + SafeStorage.getInt('whatspoppin_games_zen', 0),
+      totalPops: SafeStorage.getInt(SK.TOTAL_POPS, 0) + this.totalPopped,
+      totalGames: SafeStorage.getInt(SK.GAMES_TIMED, 0) + SafeStorage.getInt(SK.GAMES_ZEN, 0),
     };
     const freshAchs = Achievements.check(sessionSnap, ltSnap);
     freshAchs.forEach((ach, i) => this.showAchievementToast(ach, i * 2600));
@@ -3023,8 +3288,13 @@ class GameScene extends Phaser.Scene {
   // HINT SYSTEM
   // -----------------------------------------------------------
 
-  /** Find a valid swap pair. Returns {a:{r,c}, b:{r,c}} or null. */
-  findHintMove() {
+  /**
+   * Core swap-search: try every adjacent swap, return the first that produces a match.
+   * Both findHintMove() and hasPossibleMoves() delegate here to eliminate duplication.
+   * @returns {{a:{r:number,c:number}, b:{r:number,c:number}}|null}
+   * @private
+   */
+  _findValidSwap() {
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
         if (c + 1 < GRID_COLS) {
@@ -3042,6 +3312,11 @@ class GameScene extends Phaser.Scene {
       }
     }
     return null;
+  }
+
+  /** Find a valid swap pair. Returns {a:{r,c}, b:{r,c}} or null. */
+  findHintMove() {
+    return this._findValidSwap();
   }
 
   /** Player-triggered hint (costs a hint charge in timed mode). */
@@ -3086,21 +3361,7 @@ class GameScene extends Phaser.Scene {
   // POSSIBLE MOVES + RESHUFFLE
   // -----------------------------------------------------------
   hasPossibleMoves() {
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (c + 1 < GRID_COLS) {
-          this.swapGridData(r, c, r, c + 1);
-          if (this.findAllMatches().length > 0) { this.swapGridData(r, c, r, c + 1); return true; }
-          this.swapGridData(r, c, r, c + 1);
-        }
-        if (r + 1 < GRID_ROWS) {
-          this.swapGridData(r, c, r + 1, c);
-          if (this.findAllMatches().length > 0) { this.swapGridData(r, c, r + 1, c); return true; }
-          this.swapGridData(r, c, r + 1, c);
-        }
-      }
-    }
-    return false;
+    return this._findValidSwap() !== null;
   }
 
   swapGridData(r1, c1, r2, c2) {
@@ -3114,25 +3375,21 @@ class GameScene extends Phaser.Scene {
 
   reshuffleGrid() {
     const colors = [];
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (this.grid[r][c]) colors.push(this.grid[r][c].getData('colorIdx'));
-      }
-    }
+    forEachCell((r, c) => {
+      if (this.grid[r][c]) colors.push(this.grid[r][c].getData('colorIdx'));
+    });
 
     Phaser.Utils.Array.Shuffle(colors);
 
     let idx = 0;
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (this.grid[r][c]) {
-          const newColor = colors[idx++];
-          this.grid[r][c].setData('colorIdx', newColor);
-          this.grid[r][c].setTexture(`bubble_${newColor}`);
-          this.grid[r][c].setData('powerUp', POWERUP_TYPES.NONE);
-        }
+    forEachCell((r, c) => {
+      if (this.grid[r][c]) {
+        const newColor = colors[idx++];
+        this.grid[r][c].setData('colorIdx', newColor);
+        this.grid[r][c].setTexture(bubbleKey(newColor));
+        this.grid[r][c].setData('powerUp', POWERUP_TYPES.NONE);
       }
-    }
+    });
 
     this.resolveInitialMatches();
     window.audioEngine.playShuffle();

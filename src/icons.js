@@ -255,6 +255,25 @@ class Icons {
     return g;
   }
 
+  // Accessibility / eye icon (colorblind mode)
+  static a11y(scene, x, y, size = 16, color = 0xffffff) {
+    const g = scene.add.graphics();
+    const s = size * 0.4;
+    g.lineStyle(2, color, 0.9);
+    // Top lid arc
+    g.beginPath();
+    g.arc(x, y + s * 0.6, s * 1.3, Math.PI + 0.4, -0.4, false);
+    g.strokePath();
+    // Bottom lid arc
+    g.beginPath();
+    g.arc(x, y - s * 0.6, s * 1.3, 0.4, Math.PI - 0.4, false);
+    g.strokePath();
+    // Iris
+    g.fillStyle(color, 0.9);
+    g.fillCircle(x, y, s * 0.45);
+    return g;
+  }
+
   // Share / export icon
   static share(scene, x, y, size = 16, color = 0xffffff) {
     const g = scene.add.graphics();

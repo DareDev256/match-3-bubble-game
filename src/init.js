@@ -76,17 +76,31 @@ const SafeStorage = {
   },
 
   /**
+   * Validate a storage key — alphanumeric + underscores, max 64 chars.
+   * Rejects keys that could be used for prototype pollution or storage abuse.
+   * @param {string} key
+   * @returns {boolean}
+   * @private
+   */
+  _validKey(key) {
+    return typeof key === 'string' && key.length > 0 && key.length <= 64 && /^[a-zA-Z0-9_]+$/.test(key);
+  },
+
+  /**
    * Read a string value from localStorage with checksum verification.
+   * Missing checksums are treated as tampered (deletion bypass prevention).
    * @param {string} key — storage key
    * @param {*} fallback — returned if key is missing, tampered, or storage errors
    * @returns {string|*} stored value or fallback
    */
   get(key, fallback) {
+    if (!this._validKey(key)) return fallback;
     try {
       const raw = localStorage.getItem(key);
       if (raw === null) return fallback;
       const check = localStorage.getItem(key + '_c');
-      if (check && check !== this._checksum(key, raw)) return fallback;
+      // Missing checksum = tampered (prevents delete-checksum bypass)
+      if (!check || check !== this._checksum(key, raw)) return fallback;
       return raw;
     } catch (_) { return fallback; }
   },
@@ -108,15 +122,21 @@ const SafeStorage = {
     return Number.isFinite(n) ? Math.max(0, n) : fallback;
   },
 
+  /** Maximum value size in bytes — prevents localStorage abuse. */
+  MAX_VALUE_SIZE: 1024,
+
   /**
    * Write a value to localStorage with an accompanying keyed checksum.
+   * Rejects invalid keys and values exceeding 1KB.
    * Fails silently if storage is full, disabled, or in private browsing.
    * @param {string} key — storage key
    * @param {*} value — value to store (coerced to string)
    */
   set(key, value) {
+    if (!this._validKey(key)) return;
     try {
       const str = String(value);
+      if (str.length > this.MAX_VALUE_SIZE) return;
       localStorage.setItem(key, str);
       localStorage.setItem(key + '_c', this._checksum(key, str));
     } catch (_) { /* storage full or disabled — fail silently */ }

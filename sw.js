@@ -24,7 +24,17 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
 };
+
+/** Content-types safe to cache — rejects unexpected MIME types from cache poisoning. */
+const SAFE_CACHE_TYPES = new Set([
+  'text/html', 'text/css', 'text/javascript', 'application/javascript',
+  'application/json', 'image/png', 'image/svg+xml', 'image/jpeg',
+  'image/webp', 'font/woff2', 'application/wasm',
+]);
 
 /**
  * Clone a response with security headers injected.
@@ -71,10 +81,12 @@ self.addEventListener('fetch', (event) => {
     caches.match(event.request).then((cached) => {
       if (cached) return hardenResponse(cached);
       return fetch(event.request).then((response) => {
-        // Only cache same-origin or approved CDN responses
+        // Only cache same-origin or approved CDN responses with valid content-types
         if (response && response.status === 200) {
           const url = new URL(event.request.url);
-          if (url.origin === self.location.origin || url.hostname === 'cdn.jsdelivr.net') {
+          const ct = (response.headers.get('content-type') || '').split(';')[0].trim();
+          const originOk = url.origin === self.location.origin || url.hostname === 'cdn.jsdelivr.net';
+          if (originOk && (!ct || SAFE_CACHE_TYPES.has(ct))) {
             const clone = response.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           }
