@@ -31,14 +31,14 @@ src/
   init.js        — SafeStorage (keyed checksums + per-install salt) + SW registration
   history.js     — RunHistory persistence (last 10 games) + drawRunSparkline() animated bar chart renderer
   game.js        — Grid engine, 7 Phaser scenes (incl. StatsScene), processMatches() pipeline (see below, depth-capped at 20), hint system, fever meter, colorblind mode (CB_SYMBOLS + bubbleKey()), TEXT_PRESETS + textStyle() typography system, achievement system (ACHIEVEMENTS + Achievements helper), DailyChallenge system (mulberry32 seeded PRNG + date-keyed persistence), VALID_MODES allowlist for scene data sanitization, SK storage key constants (centralized SafeStorage key registry), forEachCell() grid iteration utility, _findValidSwap() unified swap-search (shared by hints + possible-move checks), per-frame render subsystems (renderPowerUpOverlays, renderFeverMeter, renderHintGlow), shared helpers (scanRuns, createButton, createToolbarBtn, createMuteToggle, safeDiv, safeScore, etc.)
-  safety.test.js — Safety & security tests: COOP/COEP headers, cache content-type validation, SRI, grid bounds guards, recursion caps, object freeze verification, scoring integrity (totalPopped accuracy), pause-state render guard (23 tests)
+  safety.test.js — Safety & security tests: COOP/COEP headers, cache content-type validation, SRI, grid bounds guards, recursion caps, object freeze verification, scoring integrity (totalPopped accuracy), pause-state render guard
   powerups.js    — PowerUpSystem (match analysis) + PowerUpRenderer (animated overlays)
   audio.js       — AudioEngine — fully synthesized sound via Web Audio API, _tone() helper, persistent mute toggle
   characters.js  — Procedurally drawn characters (Phaser Graphics API) + shared drawEye()/drawShadow() helpers
   icons.js       — Icons class — SVG-style icon system (sound, soundOff, share, hint, trophy, a11y, etc.)
-  render.test.js — 34 Vitest unit tests (Achievements persistence/unlock/check, VALID_MODES security allowlist, getAdlibTier tier resolution, getGrade boundary edge cases)
-  game.test.js   — 131 Vitest unit tests (power-ups, scoring, chain bonus, matching, gravity, milestones, badges, safeDiv/safeScore, swap-reversal invariant, hint render safety)
-  core.test.js   — 32 Vitest unit tests (scanRuns, textStyle/TEXT_PRESETS, SafeStorage tamper detection)
+  game.test.js   — unit tests (power-ups, scoring, chain bonus, matching, gravity, milestones, badges, safeDiv/safeScore, swap-reversal invariant, hint render safety)
+  core.test.js   — unit tests (scanRuns, textStyle/TEXT_PRESETS, SafeStorage tamper detection)
+  sw.test.js     — service worker tests (CSP policy constants, ASSETS manifest, hardenResponse, offline fallback, cache versioning)
 sw.js            — Service worker with CSP header injection + offline fallback
 index.html       — Entry point with CSP meta tag + SRI-verified CDN script
 ```
@@ -142,7 +142,7 @@ All score accumulation passes through `safeScore()` to prevent NaN/Infinity from
 npm test
 ```
 
-99 unit tests covering live milestone detection (fire-once semantics, no-record guard, simultaneous milestones), performance grade system (threshold logic, rank monotonicity, streak/score interaction), deadlock detection, match-finding algorithm (including cross-shaped and boundary patterns), grid gravity/drop simulation (alternating gaps, empty columns), adjacency validation, swap primitives, streak tier resolution, adlib tier selection, power-up analysis, area-of-effect calculations (edge positions, sparse grids), scoring formula (boundary conditions), shape detection, and game constant integrity. Uses Vitest.
+Four Vitest suites, run by `npm test`, cover live milestone detection (fire-once semantics, no-record guard, simultaneous milestones), performance grade system (threshold logic, rank monotonicity, streak/score interaction), deadlock detection, match-finding algorithm (including cross-shaped and boundary patterns), grid gravity/drop simulation (alternating gaps, empty columns), adjacency validation, swap primitives, streak tier resolution, adlib tier selection, power-up analysis, area-of-effect calculations (edge positions, sparse grids), scoring formula (boundary conditions), shape detection, and game constant integrity.
 
 ## Tech Stack
 
