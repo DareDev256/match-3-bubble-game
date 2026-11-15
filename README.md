@@ -1,4 +1,22 @@
-# What's Poppin
+# What's Poppin: match 3 bubble game
+
+What's Poppin is a free match 3 bubble game for the browser and phone, for anyone who wants a quick puzzle round: swap bubbles to match three or more, chain cascades, build streak multipliers and fever mode, or play the daily challenge where everyone gets the same board.
+
+<img src="docs/screenshots/2026-11-15_match-3-bubble-game-zen.png" width="360" alt="What's Poppin in Zen mode: an 8 by 10 board of coloured bubbles with the score below">
+
+[**Play it**](https://passion-pop.vercel.app) on your phone or desktop. It installs as a PWA.
+
+## Quick start
+
+```bash
+git clone https://github.com/DareDev256/match-3-bubble-game.git
+cd match-3-bubble-game
+npm run dev      # serves the folder at http://localhost:3333, no build step
+```
+
+License: MIT, see [LICENSE](LICENSE).
+
+---
 
 Bubble pop game with cultural sauce. Match bubbles, build streaks, unleash characters.
 
